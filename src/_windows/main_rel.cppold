@@ -1,0 +1,248 @@
+//--------------------------------------------------------------------------//
+// iq / rgba  .  tiny codes  .  2008                                        //
+//--------------------------------------------------------------------------//
+
+#define WIN32_LEAN_AND_MEAN
+#define WIN32_EXTRA_LEAN
+#include <windows.h>
+#include <mmsystem.h>
+#include <mmreg.h>
+#include "../intro.h"
+#include "../4klang.h"
+#include "../config.h"
+
+struct FAKEDEVMODE
+{
+	BYTE _a[36];
+	DWORD dmSize;
+	DWORD dmFields;
+	struct
+	{
+		BYTE  _b[4];
+		DWORD pfdFlags;
+	} pfd;
+	BYTE _c[56];
+	DWORD width;
+	DWORD height;
+	BYTE  _d[8];
+};
+
+#pragma data_seg("fcw")
+static WORD fcw = 0x0E7f;
+
+#pragma data_seg(".devmode")
+static FAKEDEVMODE devmode = {
+	"", sizeof(devmode), DM_PELSWIDTH | DM_PELSHEIGHT, "", PFD_DOUBLEBUFFER | PFD_SUPPORT_OPENGL, "", XRES, YRES, ""
+};
+
+#ifdef __cplusplus
+extern "C" 
+{
+#endif
+#pragma data_seg(".fltused")
+	int  _fltused = 0;
+#ifdef __cplusplus
+}
+#endif
+
+#pragma bss_seg(".mainbss")
+static HDC hDC;
+SAMPLE_TYPE	lpSoundBuffer[MAX_SAMPLES * 2];
+HWAVEOUT hWaveOut;
+
+#pragma data_seg(".giSampleRate")
+static int giSampleRate = SAMPLE_RATE;
+
+#pragma data_seg(".wavefmt")
+WAVEFORMATEX WaveFMT =
+{
+#ifdef FLOAT_32BIT	
+	WAVE_FORMAT_IEEE_FLOAT,
+#else
+	WAVE_FORMAT_PCM,
+#endif		
+    2, // channels
+    SAMPLE_RATE, // samples per sec
+    SAMPLE_RATE*sizeof(SAMPLE_TYPE)*2, // bytes per sec
+    sizeof(SAMPLE_TYPE)*2, // block alignment;
+    sizeof(SAMPLE_TYPE)*8, // bits per sample
+    0 // extension not needed
+};
+
+#pragma data_seg(".wavehdr")
+WAVEHDR WaveHDR = 
+{
+	(LPSTR)lpSoundBuffer, 
+	MAX_SAMPLES*sizeof(SAMPLE_TYPE)*2,			// MAX_SAMPLES*sizeof(float)*2(stereo)
+	0, 
+	0,
+#ifdef WAVHDR_PREPARE_HACK
+	WHDR_PREPARED,
+#else
+	0,
+#endif
+	0, 
+	0, 
+	0
+};
+
+#pragma data_seg(".MMTime")
+MMTIME MMTime =
+{ 
+	TIME_SAMPLES,
+	0
+};
+
+#define ATOM_EDIT 0xC018
+#define ATOM_STATIC 0xC019
+
+#pragma code_seg(".main")
+__declspec(naked) void entrypoint( void )
+{
+	_asm
+	{
+		fldcw[fcw]
+
+		xor esi, esi
+		push esi // ExitProcess
+
+		push esi
+		push esi
+		push esi
+		push esi
+
+#ifndef	WINDOWED
+		push esi
+		push esi
+		push esi
+		push esi
+		push WS_POPUP | WS_VISIBLE | WS_MAXIMIZE
+		push esi
+		push ATOM_STATIC
+		push esi
+		push CDS_FULLSCREEN
+		push offset devmode
+		call ChangeDisplaySettings
+#ifdef USE_SOUND_THREAD
+		push esi
+		push esi
+		push offset lpSoundBuffer
+		push _4klang_render
+		push esi
+		push esi
+		call CreateThread
+#else
+		push offset lpSoundBuffer
+		call _4klang_render
+#endif
+		call CreateWindowExA
+#else
+		push YRES
+		push XRES
+		push esi
+		push esi
+		push WS_POPUP | WS_VISIBLE
+		push esi
+		push ATOM_STATIC
+		push esi
+#ifdef USE_SOUND_THREAD
+		push esi
+		push esi
+		push offset lpSoundBuffer
+		push _4klang_render
+		push esi
+		push esi
+		call CreateThread
+#else
+		push offset lpSoundBuffer
+		call _4klang_render
+#endif
+		call CreateWindowExA
+#endif			
+
+		push eax
+		call GetDC
+		mov edi, eax
+		mov hDC, eax
+
+		push esi
+		push edi
+#ifdef PFD_HACK
+		push esi
+		push 8
+#else
+		push esi
+		push offset devmode.pfd
+		push edi
+		call ChoosePixelFormat
+		push eax
+#endif
+		push edi
+		call SetPixelFormat
+		call wglCreateContext
+		push eax
+		push edi
+		call wglMakeCurrent
+		call ShowCursor
+
+		call intro_init
+
+#ifdef SHADER_WARMUP
+		push edi
+		push esi
+		call intro_do
+		call SwapBuffers
+#endif
+
+#ifndef WAVHDR_PREPARE_HACK
+		push 0x20
+		push offset WaveHDR
+#endif
+		push 0x20
+		push offset WaveHDR
+		push esi
+		push esi
+		push esi
+		push offset WaveFMT
+		push - 1
+		push offset hWaveOut
+		call waveOutOpen
+#ifndef WAVHDR_PREPARE_HACK
+		push[hWaveOut]
+		call waveOutPrepareHeader
+#endif
+		push[hWaveOut]
+		call waveOutWrite
+
+		mainloop:
+			push esi
+			push esi
+			push esi
+			push esi
+			push esi
+			push edi
+			push 0xC
+			push offset MMTime
+			push[hWaveOut]
+			call waveOutGetPosition
+
+			push dword ptr[MMTime.u.sample]
+			fild dword ptr[esp]
+			fild giSampleRate
+			fdiv
+			fstp dword ptr[esp]
+			call intro_do
+			call SwapBuffers
+			call PeekMessage
+
+			cmp dword ptr[MMTime + 4], MAX_SAMPLES
+			jae exit
+			push VK_ESCAPE
+			call GetAsyncKeyState
+			test ax, ax
+			je mainloop
+
+		exit:
+			call ExitProcess
+	}
+}
